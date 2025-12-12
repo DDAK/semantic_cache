@@ -1,0 +1,13 @@
+# Core dependencies
+pyarrow>=14.0.0
+hnswlib>=0.7.0
+numpy>=1.24.0
+
+# Optional: Real embeddings (uncomment to use)
+# sentence-transformers>=2.2.0
+
+# Testing
+pytest>=7.0.0
+
+# Development
+# openai>=1.0.0  # For OpenAI embeddings
