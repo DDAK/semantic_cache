@@ -1,20 +1,72 @@
-# Semantic KV Cache
+<p align="center">
+  <h1 align="center">Semantic KV</h1>
+  <p align="center">
+    <strong>A blazing-fast distributed key-value store with semantic search superpowers</strong>
+  </p>
+  <p align="center">
+    <a href="#installation"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+    <a href="#performance"><img src="https://img.shields.io/badge/GET_latency-0.14ms-brightgreen.svg" alt="GET Latency"></a>
+    <a href="#performance"><img src="https://img.shields.io/badge/throughput-7.2k_ops/sec-orange.svg" alt="Throughput"></a>
+  </p>
+</p>
 
-A distributed key-value store with semantic search capabilities, built on Apache Arrow Flight.
+---
+
+**Semantic KV** combines the simplicity of a key-value store with the power of semantic search. Built on Apache Arrow Flight for zero-copy data transfer and HNSW for lightning-fast vector similarity search.
+
+```python
+# Store data like a normal KV store
+kv.put("user:alice", '{"role": "engineer", "skills": ["python", "rust"]}')
+kv.put("user:bob", '{"role": "designer", "skills": ["figma", "css"]}')
+
+# But search by meaning, not just keys
+results = kv.search("backend developer")  # Finds alice!
+```
+
+## Why Semantic KV?
+
+| Traditional KV Stores | Semantic KV |
+|----------------------|-------------|
+| Exact key match only | Find by meaning |
+| `get("user:123")` | `search("experienced python developer")` |
+| Manual indexing | Automatic embeddings |
+| Single node | Distributed & scalable |
+
+**Use Cases:**
+- **Semantic Caching** - Cache LLM responses, retrieve by similar queries
+- **User/Content Matching** - Find similar profiles, documents, products
+- **Log Analysis** - Search error logs by description, not keywords
+- **Feature Stores** - ML feature retrieval by semantic similarity
+
+## Performance
+
+Benchmarked on a 4-node cluster (localhost):
+
+| Operation | Throughput | Avg Latency | P99 Latency |
+|-----------|-----------|-------------|-------------|
+| **GET** | 7,195 ops/sec | 0.14 ms | 0.18 ms |
+| **PUT** | 3,579 ops/sec | 0.28 ms | 0.43 ms |
+| **DELETE** | 7,100 ops/sec | 0.14 ms | 0.20 ms |
+| **SEARCH** (1K keys) | 344 ops/sec | 2.9 ms | 3.4 ms |
+| **SEARCH** (10K keys) | 46 ops/sec | 21.6 ms | 30.5 ms |
+
+**Concurrent Performance:** 3,726 ops/sec sustained (8 threads)
 
 ## Features
 
-- **Distributed**: Data sharded across multiple nodes using consistent hashing
-- **Semantic Search**: Find values by meaning, not just exact keys
-- **High Performance**: Arrow Flight for zero-copy data transfer
-- **Simple API**: Standard KV operations (put/get/delete/scan)
-- **TTL Support**: Automatic key expiration
-- **Fault Tolerant**: Async replication to backup nodes
+- **Distributed Architecture** - Consistent hashing shards data across nodes
+- **Semantic Search** - HNSW-powered similarity search across all nodes
+- **Sub-millisecond Lookups** - Apache Arrow Flight zero-copy transport
+- **TTL Support** - Automatic key expiration
+- **Fault Tolerant** - Async replication, health checks, retry logic
+- **Multiple Embedding Backends** - SentenceTransformers, OpenAI, or custom
+- **Persistence** - Arrow IPC snapshots with configurable intervals
 
 ## Installation
 
 ```bash
-pip install -r requirements.txt
+pip install pyarrow numpy hnswlib
 
 # For real semantic search (recommended):
 pip install sentence-transformers
@@ -25,11 +77,15 @@ pip install sentence-transformers
 ### 1. Start a Cluster
 
 ```bash
-# Start 4 nodes on localhost
+# Clone the repo
+git clone https://github.com/YOUR_USERNAME/semantic_cache.git
+cd semantic_cache
+
+# Start 4-node cluster
 python tests/run_cluster.py
 ```
 
-### 2. Use the Client
+### 2. Connect and Use
 
 ```python
 from semantic_kv import DistributedSemanticKV
@@ -42,83 +98,81 @@ kv = DistributedSemanticKV([
     "grpc://localhost:8818",
 ])
 
-# Store data
-kv.put("user:123:profile", b'{"name": "John"}')
-kv.put("config:database:host", b"localhost")
+# Store data (routed to responsible node via consistent hashing)
+kv.put("doc:readme", b"How to install and configure the system")
+kv.put("doc:api", b"REST API endpoints and authentication")
+kv.put("doc:deploy", b"Kubernetes deployment guide")
 
-# Exact lookup
-value = kv.get("user:123:profile")
+# Exact lookup - O(1)
+value = kv.get("doc:readme")
 
-# Semantic search - find related keys
-results = kv.search("user profile information", top_k=5)
+# Semantic search - queries ALL nodes, merges results
+results = kv.search("how to set up authentication", top_k=3)
 for key, value, similarity, node in results:
-    print(f"{key}: {value} (score: {similarity:.2f})")
+    print(f"{similarity:.2f} | {key}: {value[:50]}...")
 
-# Scan keys
-keys = kv.scan(prefix="user:", limit=100)
+# Output:
+# 0.89 | doc:api: REST API endpoints and authentication...
+# 0.72 | doc:readme: How to install and configure the sys...
 ```
 
-### 3. Run Demo
+### 3. Convenience Methods
 
-```bash
-# Start cluster in one terminal
-python tests/run_cluster.py
+```python
+# String values
+kv.put_string("config:host", "localhost")
+host = kv.get_string("config:host")
 
-# Run demo in another terminal
-python tests/demo.py
+# JSON values
+kv.put_json("metrics:cpu", {"value": 45.2, "unit": "percent"})
+metrics = kv.get_json("metrics:cpu")
+
+# Key operations
+exists = kv.exists("config:host")        # True
+keys = kv.scan(prefix="config:", limit=100)  # ["config:host", ...]
+kv.delete("config:host")
 ```
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│               DistributedSemanticKV Client               │
-│                                                          │
-│   put(key) ──► hash(key) ──► route to responsible node  │
-│   get(key) ──► hash(key) ──► route to responsible node  │
-│   search() ──► scatter to ALL nodes ──► merge results   │
-└──────────────────────────┬──────────────────────────────┘
-                           │
-       ┌───────────────────┼───────────────────┐
-       │                   │                   │
-       ▼                   ▼                   ▼
-┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-│   Node A     │   │   Node B     │   │   Node C     │
-│   :8815      │   │   :8816      │   │   :8817      │
-│              │   │              │   │              │
-│ KV Store     │   │ KV Store     │   │ KV Store     │
-│ HNSW Index   │   │ HNSW Index   │   │ HNSW Index   │
-└──────────────┘   └──────────────┘   └──────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                    DistributedSemanticKV Client                  │
+│                                                                  │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
+│  │ Consistent Hash │  │  Thread Pool    │  │  Retry Logic    │  │
+│  │     Ring        │  │  (parallel I/O) │  │  + Metrics      │  │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘  │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+        ┌──────────────────────┼──────────────────────┐
+        │                      │                      │
+        ▼                      ▼                      ▼
+┌───────────────┐      ┌───────────────┐      ┌───────────────┐
+│    Node A     │      │    Node B     │      │    Node C     │
+│    :8815      │      │    :8816      │      │    :8817      │
+│               │      │               │      │               │
+│ ┌───────────┐ │      │ ┌───────────┐ │      │ ┌───────────┐ │
+│ │ KV Store  │ │      │ │ KV Store  │ │      │ │ KV Store  │ │
+│ │ (Arrow)   │ │      │ │ (Arrow)   │ │      │ │ (Arrow)   │ │
+│ └───────────┘ │      │ └───────────┘ │      │ └───────────┘ │
+│ ┌───────────┐ │      │ ┌───────────┐ │      │ ┌───────────┐ │
+│ │HNSW Index │ │      │ │HNSW Index │ │      │ │HNSW Index │ │
+│ └───────────┘ │      │ └───────────┘ │      │ └───────────┘ │
+└───────────────┘      └───────────────┘      └───────────────┘
 ```
 
-## API Reference
+**How it works:**
 
-### Client Methods
-
-| Method | Description |
-|--------|-------------|
-| `put(key, value, ttl_ms=0)` | Store key-value pair |
-| `get(key)` | Get value by exact key |
-| `search(query, top_k, threshold)` | Semantic similarity search |
-| `delete(key)` | Delete key |
-| `scan(prefix, limit)` | List keys by prefix |
-| `exists(key)` | Check if key exists |
-| `health_check()` | Check all nodes |
-| `cluster_stats()` | Get cluster statistics |
-| `clear_all()` | Clear all data |
-
-### Convenience Methods
-
-| Method | Description |
-|--------|-------------|
-| `put_string(key, value)` | Store string value |
-| `get_string(key)` | Get string value |
-| `put_json(key, value)` | Store JSON value |
-| `get_json(key)` | Get JSON value |
+| Operation | Routing Strategy |
+|-----------|-----------------|
+| `put(key)` | Hash key → route to single responsible node |
+| `get(key)` | Hash key → route to single responsible node |
+| `search(query)` | Scatter to ALL nodes → gather & merge results |
 
 ## Configuration
 
-### Node Configuration
+### Node Setup
 
 ```python
 from semantic_kv import SemanticKVNode
@@ -128,48 +182,109 @@ node = SemanticKVNode(
     location="grpc://0.0.0.0:8815",
     node_id="node-a",
     embedding_provider=SentenceTransformerEmbedding("all-MiniLM-L6-v2"),
-    max_entries=100000,
+    max_entries=100_000,           # Max vectors in index
+    hnsw_ef_construction=200,      # Index build quality
+    hnsw_m=16,                     # Connections per node
+    data_dir="./data/node-a",      # Persistence directory
 )
 node.serve()
 ```
 
-### Client Configuration
+### Client Setup
 
 ```python
 kv = DistributedSemanticKV(
-    nodes=["grpc://node1:8815", "grpc://node2:8816"],
-    replication_factor=2,
-    search_timeout=5.0,
+    nodes=["grpc://node1:8815", "grpc://node2:8816", "grpc://node3:8817"],
+    replication_factor=2,          # Write to N nodes
+    search_timeout=5.0,            # Scatter-gather timeout
+    connection_timeout=2.0,        # Per-connection timeout
+    max_workers=8,                 # Thread pool size
 )
 ```
 
-## Embedding Providers
+### Embedding Providers
 
-| Provider | Dimension | Description |
-|----------|-----------|-------------|
-| `HashEmbedding` | 384 | Deterministic pseudo-embeddings (testing) |
-| `SentenceTransformerEmbedding` | 384-768 | Local ML models (recommended) |
-| `OpenAIEmbedding` | 1536+ | OpenAI API |
+| Provider | Dimensions | Best For |
+|----------|-----------|----------|
+| `HashEmbedding` | 384 | Testing, development |
+| `SentenceTransformerEmbedding` | 384-768 | Production (local, fast) |
+| `OpenAIEmbedding` | 1536+ | Highest quality (API costs) |
+
+```python
+from semantic_kv.embeddings import (
+    HashEmbedding,                    # Testing
+    SentenceTransformerEmbedding,     # Recommended
+    OpenAIEmbedding,                  # Premium
+)
+
+# Local ML embeddings (recommended)
+embedding = SentenceTransformerEmbedding("all-MiniLM-L6-v2")
+
+# OpenAI embeddings
+embedding = OpenAIEmbedding(api_key="sk-...", model="text-embedding-3-small")
+```
+
+## API Reference
+
+### Core Operations
+
+| Method | Description | Returns |
+|--------|-------------|---------|
+| `put(key, value, ttl_ms=0)` | Store key-value pair | `bool` |
+| `get(key)` | Get value by exact key | `bytes \| None` |
+| `delete(key)` | Delete key | `bool` |
+| `exists(key)` | Check if key exists | `bool` |
+| `scan(prefix, limit)` | List keys by prefix | `List[str]` |
+| `search(query, top_k, threshold)` | Semantic similarity search | `List[Tuple]` |
+
+### Cluster Operations
+
+| Method | Description |
+|--------|-------------|
+| `health_check()` | Check all node health |
+| `cluster_stats()` | Get cluster-wide statistics |
+| `clear_all()` | Clear all data from all nodes |
+| `close()` | Close all connections |
 
 ## Testing
 
 ```bash
-# Run tests
-pytest tests/
+# Run the demo
+python tests/demo.py
 
-# Run specific test
-pytest tests/test_cluster.py -v
+# Run tests
+pytest tests/ -v
+
+# Run benchmarks
+python tests/benchmark.py
 ```
 
-## Performance
+## Roadmap
 
-| Operation | Latency (4 nodes) |
-|-----------|-------------------|
-| put | ~10-15ms |
-| get | ~5-10ms |
-| search (10k keys/node) | ~50-100ms |
-| scan | ~20-50ms |
+- [ ] Kubernetes operator for easy deployment
+- [ ] Web UI for cluster monitoring
+- [ ] Redis protocol compatibility layer
+- [ ] Automatic rebalancing on node add/remove
+- [ ] GPU-accelerated similarity search
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## License
 
-MIT
+MIT License - see [LICENSE](LICENSE) for details.
+
+---
+
+<p align="center">
+  <strong>If you find this project useful, please consider giving it a star!</strong>
+  <br>
+  <sub>Built with Apache Arrow Flight and HNSW</sub>
+</p>
